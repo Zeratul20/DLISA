@@ -1,0 +1,12 @@
+<routes>
+    <vType id="standard_car" accel="0.8" decel="4.5" sigma="0.5" length="5" minGap="2.5" maxSpeed="16.67" guiShape="passenger"/>
+    
+    <route id="route_NS" edges="B1A1 A1B3"/>
+    <route id="route_SN" edges="B3A1 A1B1"/>
+    <route id="route_EW" edges="B4A1 A1B2"/>
+    <route id="route_WE" edges="B2A1 A1B4"/>
+    <flow id="flow_NS" type="standard_car" route="route_NS" begin="0" end="2000" probability="0.2"/>
+    <flow id="flow_SN" type="standard_car" route="route_SN" begin="0" end="2000" probability="0.2"/>
+    <flow id="flow_EW" type="standard_car" route="route_EW" begin="0" end="2000" probability="0.2"/>
+    <flow id="flow_WE" type="standard_car" route="route_WE" begin="0" end="2000" probability="0.2"/>
+</routes>
