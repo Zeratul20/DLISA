@@ -20,8 +20,14 @@ class SumoAdapter:
         #  last cumm time
         self._prev_wait = {}
 
-    def start(self):
-        traci.start([self.sumo_binary, "-c", self.config_path, "--start", "--delay", "100"])
+    def start(self,seed = None):
+        cmd = [self.sumo_binary, "-c", self.config_path, "--start", "--delay", "100"]
+
+        # NEW: deterministic/stochastic replication control
+        if seed is not None:
+            cmd += ["--seed", str(seed)]
+
+        traci.start(cmd)
 
     def close(self):
         traci.close()

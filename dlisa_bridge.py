@@ -29,10 +29,10 @@ class SumoBridge:
         # We have 1 Objective: Minimize Waiting Time
         self.n_obj = 1
         # checkpoint for the start of every evaluation
-        self.checkpoint_path = None
+        self.checkpoint_path = []
 
-    def set_checkpoint(self, checkpoint_path: str):
-        self.checkpoint_path = checkpoint_path
+    def set_checkpoints(self, paths):
+        self.checkpoint_paths = paths or []
 
     def evaluate(self, configuration):
         """
@@ -46,35 +46,38 @@ class SumoBridge:
         green_ns = max(10, min(90, green_ns))
         green_ew = max(10, min(90, green_ew))
         
-        # reset checkpoint
-        if self.checkpoint_path is not None:
-            self.adapter.load_checkpoint(self.checkpoint_path)
+        WARMUP_STEPS = 30
+        MEASURE_STEPS = 200
 
-        self.adapter.apply_configuration(green_ns, green_ew)
-        
-        # 2. Run simulation step to let traffic react
-        # We run 50 steps (seconds) to get a stable measurement
-         # 3) WARM-UP (NOT SCORED)
-        WARMUP_STEPS = 30       # tweak this
-        for _ in range(WARMUP_STEPS):
-            self.adapter.run_step()
+        # If no checkpoints configured, evaluate once on current sim state
+        ckpts = self.checkpoint_paths if self.checkpoint_paths else [None]
 
-        # 4) MEASUREMENT WINDOW (SCORED) using DELTA WAITING
-        MEASURE_STEPS = 200     # tweak this
-        self.adapter.reset_waiting_meter()
+        replicate_costs = []
 
+        for ckpt in ckpts:
+            # 1) reset to baseline for this replication
+            if ckpt is not None:
+                self.adapter.load_checkpoint(ckpt)
 
-        cost = 0.0
-        for _ in range(MEASURE_STEPS):
-            self.adapter.run_step()
-            # 3. Measure cost
-            cost += self.adapter.get_delta_waiting_time_step()
-        #
-        # # 3. Measure cost
-        # cost = self.adapter.get_reward_metric()
-        
-        # Return as list (because DLiSA supports multi-objective)
-        return [cost]
+            # 2) apply candidate
+            self.adapter.apply_configuration(green_ns, green_ew)
+
+            # 3) warm-up
+            for _ in range(WARMUP_STEPS):
+                self.adapter.run_step()
+
+            # 4) measure delta waiting
+            self.adapter.reset_waiting_meter()
+            cost = 0.0
+            for _ in range(MEASURE_STEPS):
+                self.adapter.run_step()
+                cost += self.adapter.get_delta_waiting_time_step()
+
+            replicate_costs.append(cost)
+
+        # Mean across replications
+        mean_cost = float(np.mean(replicate_costs))
+        return [mean_cost]
 
     def get_current_context(self):
         """

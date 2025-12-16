@@ -132,7 +132,6 @@ def run_dlisa_live():
     # 4. MAIN LOOP
     for scenario in scenarios:
         print(f"\n\n>>> SCENARIO: {scenario} <<<")
-        bridge.set_checkpoint(None)
         generate_route_file(scenario)
         
         # === START INTELLIGENCE CHECK ===
@@ -155,27 +154,39 @@ def run_dlisa_live():
             # CHECK 2: No memory? We must learn (Run the EVOLUTIONARY LOOP)
             print(f"   [UNKNOWN] Never seen '{scenario}' before. Starting AI Optimization...")
             
-            env = SumoAdapter(gui=True)
-            env.start()
-            bridge.adapter = env
             
             # --- START EVOLUTION (The "AI" Part) ---
             
 
             # checkpoint setup
             PRELOAD_STEPS = 200  # how long to run before capturing baseline
-            for _ in range(PRELOAD_STEPS):
-                bridge.adapter.run_step()
-
             ckpt_dir = "./traffic_env/checkpoints"
             os.makedirs(ckpt_dir, exist_ok=True)
-            ckpt_path = os.path.abspath(os.path.join(ckpt_dir, f"{scenario}.xml"))
 
-            bridge.adapter.save_checkpoint(ckpt_path)
-            bridge.set_checkpoint(ckpt_path)
+            checkpoint_paths = []
+            for seed in [1,2,3]:
 
-            print(f"   [CHECKPOINT] Baseline saved: {ckpt_path}")
+                tmp = SumoAdapter(gui=False)
+                tmp.start(seed=seed)
 
+                bridge.adapter = tmp  # so run_step uses the active sim
+
+                for _ in range(PRELOAD_STEPS):
+                    tmp.run_step()
+
+                ckpt_path = os.path.abspath(os.path.join(ckpt_dir,f"{scenario}_seed{seed}.xml"))
+                tmp.save_checkpoint(ckpt_path)
+                checkpoint_paths.append(ckpt_path)
+
+                tmp.close()
+
+            bridge.set_checkpoints(checkpoint_paths)
+
+            print(f"   [CHECKPOINTS] Using {len(checkpoint_paths)} replications.")
+
+            env = SumoAdapter(gui=True)
+            env.start()
+            bridge.adapter = env
 
             # Generation 0: Random Guesses
             population = planner.initialize_population(
@@ -187,7 +198,8 @@ def run_dlisa_live():
             evaluated_history = [] 
 
             # Run for 3 Generations (0, 1, 2)
-            for gen in range(9):
+            generations = 4
+            for gen in range(generations):
                 print(f"\n     --- GENERATION {gen} ---")
                 current_gen_results = []
                 
@@ -211,7 +223,7 @@ def run_dlisa_live():
                 evaluated_history.extend(current_gen_results)
 
                 # CREATE NEXT GENERATION (Evolution)
-                if gen < 2: # Don't breed after the last generation
+                if gen < generations-1: # Don't breed after the last generation
                     print("     [AI] Evolving new population based on results...")
                     population = planner.generate_offspring(
                         evaluated_history, 
