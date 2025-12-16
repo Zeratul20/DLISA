@@ -54,9 +54,18 @@ class SumoBridge:
         
         # 2. Run simulation step to let traffic react
         # We run 50 steps (seconds) to get a stable measurement
+         # 3) WARM-UP (NOT SCORED)
+        WARMUP_STEPS = 30       # tweak this
+        for _ in range(WARMUP_STEPS):
+            self.adapter.run_step()
+
+        # 4) MEASUREMENT WINDOW (SCORED) using DELTA WAITING
+        MEASURE_STEPS = 200     # tweak this
         self.adapter.reset_waiting_meter()
+
+
         cost = 0.0
-        for _ in range(50):
+        for _ in range(MEASURE_STEPS):
             self.adapter.run_step()
             # 3. Measure cost
             cost += self.adapter.get_delta_waiting_time_step()
