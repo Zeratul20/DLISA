@@ -88,6 +88,79 @@ def patched_generate_offspring(self, evaluated_population, pop_size):
 AdaptationOptimizer.generate_offspring = patched_generate_offspring
 # ==========================================
 
+def classify_workload(state):
+    qN, qS, qE, qW = state
+    ns = qN + qS
+    ew = qE + qW
+    ratio = ns / (ew + 1e-9)
+
+    if ratio >= 2.0:
+        return "NS_Heavy", ratio, ns, ew
+    if ratio <= 0.5:
+        return "EW_Heavy", ratio, ns, ew
+    return "Balanced", ratio, ns, ew
+
+
+def run_workload_detector_demo():
+    # timeline
+    segment_len = 200
+    n_cycles = 3
+    seed = 123
+
+    timeline = build_random_cycling_timeline(segment_len=segment_len, n_cycles=n_cycles, seed=seed)
+    generate_timeline_route_file(timeline)
+    total_end = timeline[-1]["end"] if timeline else 0
+
+    # detector settings (your request: keep state for 100–300 steps)
+    HOLD_STEPS = 200      # set to 100..300
+    CHECK_EVERY = 25
+
+    env = SumoAdapter(gui=True)
+    env.start(seed=seed)
+    bridge = SumoBridge(env)
+
+    bridge.adapter.apply_configuration(30, 30)
+
+    held_label = None
+    hold_until = -1
+
+    try:
+        for t in range(total_end + 1):
+            bridge.adapter.run_step()
+
+            # stop once flows ended and no vehicles remain
+            if t >= total_end and traci.simulation.getMinExpectedNumber() == 0:
+                print(f"\n[INFO] No more vehicles expected at t={t}. Closing.\n")
+                break
+
+            if t % CHECK_EVERY != 0:
+                continue
+
+            state = bridge.adapter.get_state()
+            raw_label, ratio, ns, ew = classify_workload(state)
+
+            # initialize held label once
+            if held_label is None:
+                held_label = raw_label
+                hold_until = t + HOLD_STEPS
+                print(f"\n[DETECT] INITIAL @ t={t}: {held_label} (hold at least{HOLD_STEPS})\n")
+
+            # change only if hold expired
+            if t >= hold_until and raw_label != held_label:
+                prev = held_label
+                held_label = raw_label
+                hold_until = t + HOLD_STEPS
+                print(f"\n[DETECT] CHANGE @ t={t}: {prev} -> {held_label} (hold {HOLD_STEPS})\n")
+
+            print(f"[MON] t={t:4d} raw={raw_label:9s} held={held_label:9s} q={state} NS={ns:3d} EW={ew:3d} NS/EW={ratio:5.2f}")
+
+            time.sleep(0.02)
+
+    except KeyboardInterrupt:
+        print("\nStopping detector...")
+
+    finally:
+        env.close()
 def run_dynamic_timeline_demo():
     """
     Demo only: dynamic traffic workload changes in ONE SUMO run.
@@ -330,12 +403,9 @@ def _parse_args():
         "mode",
         nargs="?",
         default="testing",
-        choices=["testing", "demo"],
-        help="Run mode: testing (default) or demo",
+        choices=["testing", "demo", "detect"],
+        help="Run mode: testing (default), demo, detect",
     )
-
-
-
     return parser.parse_args()
 
 
@@ -343,7 +413,8 @@ if __name__ == "__main__":
     args = _parse_args()
 
     if args.mode == "demo":
-        # Make sure you have defined run_dynamic_timeline_demo(...)
         run_dynamic_timeline_demo()
+    elif args.mode == "detect":
+        run_workload_detector_demo()
     else:
         run_dlisa_live()

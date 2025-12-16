@@ -29,7 +29,7 @@ class SumoBridge:
         # We have 1 Objective: Minimize Waiting Time
         self.n_obj = 1
         # checkpoint for the start of every evaluation
-        self.checkpoint_path = []
+        self.checkpoint_paths = []
 
     def set_checkpoints(self, paths):
         self.checkpoint_paths = paths or []
