@@ -3,9 +3,10 @@ import os
 import shutil
 import numpy as np # Make sure to install numpy: pip install numpy
 import json
-from tools.workload_generator import generate_route_file
+from tools.workload_generator import generate_route_file, generate_timeline_route_file, build_random_cycling_timeline
 from adapters.sumo_adapter import SumoAdapter
 from dlisa_bridge import SumoBridge, AdaptationOptimizer
+import argparse
 
 # ==========================================
 # MONKEY PATCH 1: FIX INITIALIZATION CRASH
@@ -87,6 +88,73 @@ def patched_generate_offspring(self, evaluated_population, pop_size):
 AdaptationOptimizer.generate_offspring = patched_generate_offspring
 # ==========================================
 
+def run_dynamic_timeline_demo():
+    """
+    Demo only: dynamic traffic workload changes in ONE SUMO run.
+    Random order per cycle, cycles back multiple times.
+    Prints segment changes + queue feedback so you can verify it works.
+    """
+    # Keep total duration <= 2000 to match your previous default horizon :contentReference[oaicite:2]{index=2}
+    segment_len = 200
+    n_cycles = 3
+    seed = 123
+
+    timeline = build_random_cycling_timeline(
+        segment_len=segment_len,
+        n_cycles=n_cycles,
+        seed=seed
+    )
+
+    # Generate dynamic routes file
+    generate_timeline_route_file(timeline)
+
+    # Print the schedule so you know what's coming
+    print("\n=== TIMELINE SCHEDULE ===")
+    for seg in timeline:
+        print(f"  {seg['begin']:>4}..{seg['end']:<4}  {seg['name']}")
+    total_end = timeline[-1]["end"] if timeline else 0
+    print("=========================\n")
+
+    # Start SUMO
+    env = SumoAdapter(gui=True)
+    env.start(seed=seed)
+    bridge = SumoBridge(env)
+
+    # fixed light config so you can observe demand changes (not adaptation yet)
+    fixed = (30, 30)
+    bridge.adapter.apply_configuration(*fixed)
+
+    seg_idx = 0
+    next_switch = timeline[0]["end"] if timeline else None
+
+    # Run until end of timeline
+    for t in range(total_end):
+        bridge.adapter.run_step()
+
+        # detect segment boundary (purely for logging; flows switch automatically)
+        if next_switch is not None and t + 1 == next_switch:
+            seg_idx += 1
+            if seg_idx < len(timeline):
+                print(f"\n=== SWITCH @ t={t+1}: now entering {timeline[seg_idx]['name']} ({timeline[seg_idx]['begin']}..{timeline[seg_idx]['end']}) ===")
+                next_switch = timeline[seg_idx]["end"]
+            else:
+                next_switch = None
+
+        # periodic feedback
+        if t % 50 == 0:
+            qN, qS, qE, qW = bridge.adapter.get_state()
+            ns = qN + qS
+            ew = qE + qW
+            ratio = (ns / ew) if ew > 0 else float("inf")
+            cur_seg = timeline[seg_idx]["name"] if seg_idx < len(timeline) else "DONE"
+            print(f"t={t:4d} seg={cur_seg:9s} q=[{qN},{qS},{qE},{qW}] NS={ns:3d} EW={ew:3d} NS/EW={ratio:5.2f}")
+
+        time.sleep(0.02)  # make it watchable
+
+    env.close()
+    print("\nDemo finished.")
+
+
 
 def run_dlisa_live():
     # 1. SETUP
@@ -156,7 +224,7 @@ def run_dlisa_live():
             
             
             # --- START EVOLUTION (The "AI" Part) ---
-            
+            import argparse
 
             # checkpoint setup
             PRELOAD_STEPS = 200  # how long to run before capturing baseline
@@ -256,5 +324,26 @@ def run_dlisa_live():
             
         env.close()
 
+def _parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "mode",
+        nargs="?",
+        default="testing",
+        choices=["testing", "demo"],
+        help="Run mode: testing (default) or demo",
+    )
+
+
+
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    run_dlisa_live()
+    args = _parse_args()
+
+    if args.mode == "demo":
+        # Make sure you have defined run_dynamic_timeline_demo(...)
+        run_dynamic_timeline_demo()
+    else:
+        run_dlisa_live()
