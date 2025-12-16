@@ -87,6 +87,123 @@ def patched_generate_offspring(self, evaluated_population, pop_size):
 # Apply Patch 2 dynamically
 AdaptationOptimizer.generate_offspring = patched_generate_offspring
 # ==========================================
+def optimize_in_twin(planner, workload_label, pop_size=5, generations=4):
+    # overwrite routes for the twin ONLY (live already loaded its own at start)
+    generate_route_file(workload_label)
+
+    # start a headless cyber-twin SUMO
+    twin = SumoAdapter(gui=False, label="twin", port=8814)
+    twin.start(seed=1)
+    twin_bridge = SumoBridge(twin)
+
+    best_config = None
+    best_cost = float("inf")
+    evaluated_history = []
+
+    population = planner.initialize_population(config_space=twin_bridge.bounds, required_size=pop_size)
+
+    for gen in range(generations):
+        print(f"    [TWIN] gen={gen}")
+        for i, config in enumerate(population):
+            cost = twin_bridge.evaluate(config)[0]
+            print(f"      cand={i} x={config.tolist()} cost={cost:.2f}")
+            evaluated_history.append([config, [cost]])
+
+            if cost < best_cost:
+                best_cost = cost
+                best_config = config
+
+        if gen < generations - 1:
+            population = planner.generate_offspring(evaluated_history, pop_size=pop_size)
+
+    twin.close()
+    return best_config, best_cost
+
+def run_cyber_twin_demo():
+    # LIVE traffic timeline
+    segment_len = 200
+    n_cycles = 3
+    seed = 123
+    timeline = build_random_cycling_timeline(segment_len=segment_len, n_cycles=n_cycles, seed=seed)
+    generate_timeline_route_file(timeline)
+    total_end = timeline[-1]["end"] if timeline else 0
+
+    # planner bootstrap (dummy env just to construct optimizer)
+    init_env = SumoAdapter(gui=False, label="init", port=8815)
+    init_env.start(seed=seed)
+    init_bridge = SumoBridge(init_env)
+
+    planner = AdaptationOptimizer(
+        max_generation=10,
+        pop_size=5,
+        mutation_rate=0.1,
+        crossover_rate=0.8,
+        compared_algorithms=["DLiSA"],
+        system=init_bridge,
+        optimization_goal="Minimize_Time"
+    )
+    init_env.close()
+
+    # LIVE SUMO
+    live = SumoAdapter(gui=True, label="live", port=8813)
+    live.start(seed=seed)
+    live_bridge = SumoBridge(live)
+
+    # start with neutral timings
+    live_bridge.adapter.apply_configuration(30, 30)
+
+    # detector settings
+    CHECK_EVERY = 25
+    K = 4         # stable K checks before commit
+    MIN_TOTAL = 6 # ignore noisy changes
+
+    held = None
+    candidate = None
+    stable = 0
+
+    try:
+        for t in range(total_end + 1):
+            live.run_step()
+
+            # stop cleanly after timeline ends and vehicles clear
+            if t >= total_end and live.min_expected() == 0:
+                print(f"\n[INFO] Done at t={t}. Closing.\n")
+                break
+
+            if t % CHECK_EVERY != 0:
+                continue
+
+            state = live.get_state()
+            raw, ratio, ns, ew = classify_workload(state)
+
+            if (ns + ew) < MIN_TOTAL and held is not None:
+                raw = held
+
+            print(f"[MON] t={t:4d} raw={raw:9s} held={str(held):9s} q={state} NS={ns:3d} EW={ew:3d} NS/EW={ratio:5.2f}")
+
+            if raw != candidate:
+                candidate = raw
+                stable = 1
+            else:
+                stable += 1
+
+            if stable >= K and candidate != held:
+                prev = held
+                held = candidate
+                print(f"\n[DETECT] CHANGE @ t={t}: {prev} -> {held}")
+                print("[TWIN] optimizing...\n")
+
+                best_cfg, best_cost = optimize_in_twin(planner, held)
+                gns, gew = int(best_cfg[0]), int(best_cfg[1])
+
+                print(f"[APPLY] t={t} workload={held} cfg=[{gns},{gew}] twin_cost={best_cost:.2f}\n")
+                live_bridge.adapter.apply_configuration(gns, gew)
+
+            time.sleep(0.02)
+
+    finally:
+        live.close()
+
 
 def classify_workload(state):
     qN, qS, qE, qW = state
@@ -129,7 +246,7 @@ def run_workload_detector_demo():
             bridge.adapter.run_step()
 
             # stop once flows ended and no vehicles remain
-            if t >= total_end and traci.simulation.getMinExpectedNumber() == 0:
+            if t >= total_end and  env.min_expected() == 0:
                 print(f"\n[INFO] No more vehicles expected at t={t}. Closing.\n")
                 break
 
@@ -297,7 +414,6 @@ def run_dlisa_live():
             
             
             # --- START EVOLUTION (The "AI" Part) ---
-            import argparse
 
             # checkpoint setup
             PRELOAD_STEPS = 200  # how long to run before capturing baseline
@@ -403,8 +519,8 @@ def _parse_args():
         "mode",
         nargs="?",
         default="testing",
-        choices=["testing", "demo", "detect"],
-        help="Run mode: testing (default), demo, detect",
+        choices=["testing", "demo", "detect","demo_ct"],
+        help="Run mode: testing (default), demo, detect, demo_ct",
     )
     return parser.parse_args()
 
@@ -416,5 +532,7 @@ if __name__ == "__main__":
         run_dynamic_timeline_demo()
     elif args.mode == "detect":
         run_workload_detector_demo()
+    elif args.mode == "demo_ct":
+        run_cyber_twin_demo()
     else:
         run_dlisa_live()
