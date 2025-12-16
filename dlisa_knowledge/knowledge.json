@@ -1,9 +1,23 @@
 {
     "NS_Heavy": {
         "config": [
-            46,
-            81
+            49,
+            50
         ],
-        "cost": 31.0
+        "cost": 392.0
+    },
+    "Balanced": {
+        "config": [
+            89,
+            57
+        ],
+        "cost": 499.0
+    },
+    "EW_Heavy": {
+        "config": [
+            32,
+            16
+        ],
+        "cost": 56.0
     }
 }

@@ -17,6 +17,8 @@ class SumoAdapter:
         
         # FIX 1: Updated ID from your find_lanes.py output
         self.tls_id = "A1" 
+        #  last cumm time
+        self._prev_wait = {}
 
     def start(self):
         traci.start([self.sumo_binary, "-c", self.config_path, "--start", "--delay", "100"])
@@ -35,7 +37,35 @@ class SumoAdapter:
         
         return [q_N, q_S, q_E, q_W]
 
+    def reset_waiting_meter(self):
+        """Reset delta-wait tracking (call at the start of each evaluation window)."""
+        self._prev_wait = {}
+
+    def get_delta_waiting_time_step(self) -> float:
+        """
+        Return waiting time ADDED during the current step only (delta),
+        computed from accumulated waiting time differences per vehicle.
+        """
+        total_delta = 0.0
+        veh_ids = traci.vehicle.getIDList()
+
+        for vid in veh_ids:
+            cur = traci.vehicle.getAccumulatedWaitingTime(vid)
+            prev = self._prev_wait.get(vid, cur)  # first time seen -> delta 0
+            d = cur - prev
+            if d > 0:
+                total_delta += d
+            self._prev_wait[vid] = cur
+
+        # cleanup vehicles that left the simulation
+        for vid in list(self._prev_wait.keys()):
+            if vid not in veh_ids:
+                del self._prev_wait[vid]
+
+        return total_delta
+
     def apply_configuration(self, green_NS, green_EW):
+        print("APPLY green_NS:", green_NS, "green_EW:", green_EW)
         # FIX 2: Use getAllProgramLogics instead of getLogic
         logic = traci.trafficlight.getAllProgramLogics(self.tls_id)[0]
         
@@ -69,6 +99,15 @@ class SumoAdapter:
         
         logic.phases = phases
         traci.trafficlight.setCompleteRedYellowGreenDefinition(self.tls_id, logic)
+
+    def save_checkpoint(self, path: str):
+        """Save SUMO state to an XML checkpoint."""
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        traci.simulation.saveState(path)
+
+    def load_checkpoint(self, path: str):
+        """Load SUMO state from an XML checkpoint."""
+        traci.simulation.loadState(path)
 
     def run_step(self):
         traci.simulationStep()

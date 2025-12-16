@@ -132,6 +132,7 @@ def run_dlisa_live():
     # 4. MAIN LOOP
     for scenario in scenarios:
         print(f"\n\n>>> SCENARIO: {scenario} <<<")
+        bridge.set_checkpoint(None)
         generate_route_file(scenario)
         
         # === START INTELLIGENCE CHECK ===
@@ -160,6 +161,22 @@ def run_dlisa_live():
             
             # --- START EVOLUTION (The "AI" Part) ---
             
+
+            # checkpoint setup
+            PRELOAD_STEPS = 200  # how long to run before capturing baseline
+            for _ in range(PRELOAD_STEPS):
+                bridge.adapter.run_step()
+
+            ckpt_dir = "./traffic_env/checkpoints"
+            os.makedirs(ckpt_dir, exist_ok=True)
+            ckpt_path = os.path.abspath(os.path.join(ckpt_dir, f"{scenario}.xml"))
+
+            bridge.adapter.save_checkpoint(ckpt_path)
+            bridge.set_checkpoint(ckpt_path)
+
+            print(f"   [CHECKPOINT] Baseline saved: {ckpt_path}")
+
+
             # Generation 0: Random Guesses
             population = planner.initialize_population(
                 config_space=bridge.bounds, 
@@ -170,7 +187,7 @@ def run_dlisa_live():
             evaluated_history = [] 
 
             # Run for 3 Generations (0, 1, 2)
-            for gen in range(3):
+            for gen in range(9):
                 print(f"\n     --- GENERATION {gen} ---")
                 current_gen_results = []
                 

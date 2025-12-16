@@ -28,6 +28,11 @@ class SumoBridge:
         
         # We have 1 Objective: Minimize Waiting Time
         self.n_obj = 1
+        # checkpoint for the start of every evaluation
+        self.checkpoint_path = None
+
+    def set_checkpoint(self, checkpoint_path: str):
+        self.checkpoint_path = checkpoint_path
 
     def evaluate(self, configuration):
         """
@@ -41,15 +46,23 @@ class SumoBridge:
         green_ns = max(10, min(90, green_ns))
         green_ew = max(10, min(90, green_ew))
         
+        # reset checkpoint
+        if self.checkpoint_path is not None:
+            self.adapter.load_checkpoint(self.checkpoint_path)
+
         self.adapter.apply_configuration(green_ns, green_ew)
         
         # 2. Run simulation step to let traffic react
         # We run 50 steps (seconds) to get a stable measurement
+        self.adapter.reset_waiting_meter()
+        cost = 0.0
         for _ in range(50):
             self.adapter.run_step()
-            
-        # 3. Measure cost
-        cost = self.adapter.get_reward_metric()
+            # 3. Measure cost
+            cost += self.adapter.get_delta_waiting_time_step()
+        #
+        # # 3. Measure cost
+        # cost = self.adapter.get_reward_metric()
         
         # Return as list (because DLiSA supports multi-objective)
         return [cost]
