@@ -87,14 +87,45 @@ def patched_generate_offspring(self, evaluated_population, pop_size):
 # Apply Patch 2 dynamically
 AdaptationOptimizer.generate_offspring = patched_generate_offspring
 # ==========================================
+###CHECKPOINTS FOR TWIN
+TWIN_CHECKPOINT_CACHE = {}
+
 def optimize_in_twin(planner, workload_label, pop_size=5, generations=4):
     # overwrite routes for the twin ONLY (live already loaded its own at start)
     generate_route_file(workload_label)
+
+    ckpt_dir = "./traffic_env/checkpoints_ct"
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    checkpoint_paths = TWIN_CHECKPOINT_CACHE.get(workload_label, [])
+    if not checkpoint_paths or not all(os.path.exists(p) for p in checkpoint_paths):
+        PRELOAD_STEPS = 200
+        checkpoint_paths = []
+        for seed in [1, 2, 3]:
+            ckpt_path = os.path.abspath(os.path.join(ckpt_dir, f"{workload_label}_seed{seed}.xml"))
+
+            if not os.path.exists(ckpt_path):
+                tmp = SumoAdapter(gui=False, label=f"ckpt_{workload_label}_{seed}", port=8820 + seed)
+                tmp.start(seed=seed)
+
+                for _ in range(PRELOAD_STEPS):
+                    tmp.run_step()
+
+                tmp.save_checkpoint(ckpt_path)
+                tmp.close()
+
+            checkpoint_paths.append(ckpt_path)
+
+        TWIN_CHECKPOINT_CACHE[workload_label] = checkpoint_paths
+    # ---------------------------------------------------------------
 
     # start a headless cyber-twin SUMO
     twin = SumoAdapter(gui=False, label="twin", port=8814)
     twin.start(seed=1)
     twin_bridge = SumoBridge(twin)
+
+    # ✅ THE KEY FIX: pin evaluations to fixed starting states (replications)
+    twin_bridge.set_checkpoints(checkpoint_paths)
 
     best_config = None
     best_cost = float("inf")
