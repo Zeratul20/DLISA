@@ -21,10 +21,10 @@ def generate_timeline_route_file(timeline, output_path="traffic_env/routes.rou.x
 """, file=routes)
 
         # Routes
-        print('    <route id="route_NS" edges="B1A1 A1B3"/>', file=routes)
-        print('    <route id="route_SN" edges="B3A1 A1B1"/>', file=routes)
-        print('    <route id="route_EW" edges="B4A1 A1B2"/>', file=routes)
-        print('    <route id="route_WE" edges="B2A1 A1B4"/>', file=routes)
+        print('    <route id="route_NS" edges="B2A1 A1B4"/>', file=routes)
+        print('    <route id="route_SN" edges="B4A1 A1B2"/>', file=routes)
+        print('    <route id="route_EW" edges="B1A1 A1B3"/>', file=routes)
+        print('    <route id="route_WE" edges="B3A1 A1B1"/>', file=routes)
 
         # Timeline flows (each segment gets its own set of 4 flows)
         for i, seg in enumerate(timeline):

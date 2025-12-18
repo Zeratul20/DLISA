@@ -107,11 +107,6 @@ def optimize_in_twin(live_optimizer, workload_label, initial_population, initial
         config_space=twin_bridge.bounds,
         perf_space=None,
         max_generation=live_optimizer.max_generation,
-        environmental_selection_type='Traditional',
-        selected_algorithm='DLiSA',
-        run_no=1,
-        system="Traffic",
-        environment_name=workload_label,
         bridge=twin_bridge
     )
 
@@ -119,6 +114,19 @@ def optimize_in_twin(live_optimizer, workload_label, initial_population, initial
 
     # Return results for DLiSA memory
     return final_pop, final_perfs, evaluated_map
+
+
+def get_actual_workload_label(timeline, current_time_step):
+    """
+    Finds the ground truth workload label for a specific time step
+    based on the generated timeline.
+    """
+    for segment in timeline:
+        # Check if the current time falls within this segment's window
+        if segment["begin"] <= current_time_step < segment["end"]:
+            return segment["name"]
+
+    return "Unknown"  # Should not happen
 
 
 def run_cyber_twin_demo():
@@ -176,8 +184,8 @@ def run_cyber_twin_demo():
             else:
                 stable += 1
 
-            print(
-                f"[MON] t={t} Workload={detected_workload} Config={crt_config} State={(halting_state, density_state)}")
+            real_workload = get_actual_workload_label(timeline, t)
+            print(f"[MON] t={t} Real Workload={real_workload} Detected Workload={detected_workload} Config={crt_config} Halting state={halting_state} Density state={density_state}")
 
             # New workload detected - optimize configuration
             if t % CHECK_EVERY == 0 and stable >= MIN_STABLE_CLASSIFICATIONS and candidate_workload != crt_workload:
