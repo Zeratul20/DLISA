@@ -1,231 +1,314 @@
-import time
 import os
-import shutil
-import numpy as np # Make sure to install numpy: pip install numpy
-import json
-from tools.workload_generator import generate_route_file
+import sys
+import time
+
+import numpy as np
+
 from adapters.sumo_adapter import SumoAdapter
-from dlisa_bridge import SumoBridge, AdaptationOptimizer
+from dlisa_bridge import SumoBridge
+from dlisa_source.Adaptation_Optimizer import AdaptationOptimizer
+from dlisa_source.Genetic_Algorithm import GeneticAlgorithm
+from tools.workload_generator import build_random_cycling_timeline, generate_timeline_route_file
 
-# ==========================================
-# MONKEY PATCH 1: FIX INITIALIZATION CRASH
-# ==========================================
-def patched_initialize_population(self, config_space, required_size, existing_configs=None, existing_ids=None):
+###### Global definitions of configurable parameters
+### Timeline creation
+TIMELINE_SEGMENT_LENGTH = 200
+TIMELINE_CYCLE_COUNT = 1
+###
+### Optimizer
+OPTIMIZER_MAX_GENERATION = 5
+OPTIMIZER_POPULATION_SIZE = 5
+OPTIMIZER_MUTATION_RATE = 0.1
+OPTIMIZER_CROSS_RATE = 0.8
+###
+### Live simulation
+LIVE_START_CONFIG = [30, 30]
+CHECK_EVERY = 25
+MIN_STABLE_CLASSIFICATIONS = 6
+MIN_HALTED_CARS = 6
+###
+######
+
+
+def classify_workload(halting_state, density_state, queue_threshold=10, flow_ratio_threshold=2.0):
     """
-    A simple replacement for the crashing initialize_population method.
-    Generates random configurations as NumPy arrays.
+    Classifies workload using both Queue Length (Halting) and Traffic Density (Total Vehicles).
+
+    halting_state: [qN, qS, qE, qW] - Cars actually stopped.
+    density_state: [tN, tS, tE, tW] - Total cars on the lane.
     """
-    print("   [Patch] Generating initial population using fixed logic...")
-    population = []
-    
-    # Ensure config_space is a numpy array
-    bounds = np.array(config_space)
-    
-    for _ in range(required_size):
-        # Generate a random configuration
-        # Gene 0: Green NS, Gene 1: Green EW
-        config = []
-        for i in range(len(bounds)):
-            low = bounds[i][0]
-            high = bounds[i][1]
-            val = np.random.randint(low, high + 1)
-            config.append(val)
-        
-        # CRITICAL FIX: Convert to NumPy array
-        population.append(np.array(config))
-        
-    return population
+    # Unpack
+    q_ns1, q_ns2, q_ew1, q_ew2 = halting_state
+    t_ns1, t_ns2, t_ew1, t_ew2 = density_state
 
-# Apply Patch 1
-AdaptationOptimizer.initialize_population = patched_initialize_population
+    # 1. Calculate Queue Severity (The "Pain")
+    ns_queue = q_ns1 + q_ns2
+    ew_queue = q_ew1 + q_ew2
 
+    # 2. Calculate Total Demand (The "Volume")
+    ns_volume = t_ns1 + t_ns2
+    ew_volume = t_ew1 + t_ew2
 
-# ==========================================
-# MONKEY PATCH 2: ENABLE EVOLUTION (AI)
-# ==========================================
-def patched_generate_offspring(self, evaluated_population, pop_size):
-    """
-    Implements a Standard Genetic Algorithm (Selection -> Crossover -> Mutation).
-    This fixes the 'AttributeError' and allows the system to learn.
-    """
-    print("     [Patch] Running Evolutionary Logic (Selection -> Crossover -> Mutation)...")
-    
-    # 1. SELECTION: Sort all past results by cost (Lowest is better)
-    # structure: [ [config_array, [cost]], ... ]
-    sorted_pop = sorted(evaluated_population, key=lambda x: x[1][0])
-    
-    # Keep the top 50% best parents
-    n_parents = max(1, len(sorted_pop) // 2)
-    parents = [item[0] for item in sorted_pop[:n_parents]]
-    
-    offspring = []
-    
-    # 2. CROSSOVER & MUTATION: Create new children
-    while len(offspring) < pop_size:
-        # Pick two random parents
-        p1 = parents[np.random.randint(len(parents))]
-        p2 = parents[np.random.randint(len(parents))]
-        
-        # Crossover: Mix genes (Child gets half from P1, half from P2)
-        child = [p1[0], p2[1]]
-        
-        # Mutation: 30% chance to tweak the timing
-        if np.random.rand() < 0.3:
-            gene_idx = np.random.randint(2) # Pick gene 0 or 1
-            change = np.random.randint(-10, 11) # Change by -10 to +10 seconds
-            child[gene_idx] += change
-            
-            # Clamp: Ensure valid traffic light bounds (10s to 90s)
-            child[gene_idx] = max(10, min(90, child[gene_idx]))
-        
-        # Convert to numpy for consistency
-        offspring.append(np.array(child))
-        
-    return offspring
+    # 3. Determine Load Status based on Queues (Priority to stopped cars)
+    ns_is_critical = ns_queue > queue_threshold
+    ew_is_critical = ew_queue > queue_threshold
 
-# Apply Patch 2 dynamically
-AdaptationOptimizer.generate_offspring = patched_generate_offspring
-# ==========================================
+    # --- CLASSIFICATION LOGIC ---
 
+    # CASE A: Saturation (Gridlock)
+    # Both sides are critical.
+    # OR: One side is critical, and the other has high moving volume (approaching saturation).
+    if (ns_is_critical and ew_is_critical) or \
+            (ns_is_critical and ew_volume > queue_threshold) or \
+            (ew_is_critical and ns_volume > queue_threshold):
+        return "Saturated", 1.0, ns_queue, ew_queue
 
-def run_dlisa_live():
-    # 1. SETUP
-    scenarios = ["NS_Heavy", "Balanced", "EW_Heavy"]
-    kb_path = "./dlisa_knowledge/knowledge.json"
-    
-    # Create folder if missing
-    if not os.path.exists("./dlisa_knowledge"): 
-        os.makedirs("./dlisa_knowledge")
+    # CASE B: Directional Heaviness (Critical Queues)
+    if ns_is_critical:
+        ratio = ns_queue / max(1, ew_queue)
+        return "NS_Heavy", ratio, ns_queue, ew_queue
 
-    # Load existing memory if file exists
-    knowledge_base = {}
-    if os.path.exists(kb_path):
-        with open(kb_path, 'r') as f:
-            try:
-                knowledge_base = json.load(f)
-            except json.JSONDecodeError:
-                knowledge_base = {}
-        print(f"-> Loaded Knowledge Base: {len(knowledge_base)} scenarios known.")
+    if ew_is_critical:
+        ratio = ew_queue / max(1, ns_queue)
+        return "EW_Heavy", ratio, ns_queue, ew_queue
 
-    print("=== DLiSA TRAFFIC OPTIMIZATION (LIVE MODE) STARTED ===")
-
-    # 2. INITIALIZE ENVIRONMENT & BRIDGE
-    # Just to init the bridge object, we run a quick dummy start
-    generate_route_file("Balanced")
-    init_env = SumoAdapter(gui=False) # No GUI for init
-    init_env.start()
-    bridge = SumoBridge(init_env)
-    
-    # 3. INITIALIZE THE OPTIMIZER
-    print("-> Initializing Adaptation Optimizer...")
-    planner = AdaptationOptimizer(
-        max_generation=10, 
-        pop_size=5,
-        mutation_rate=0.1, 
-        crossover_rate=0.8, 
-        compared_algorithms=["DLiSA"], 
-        system=bridge,
-        optimization_goal="Minimize_Time"
-    )
-    init_env.close()
-
-    # 4. MAIN LOOP
-    for scenario in scenarios:
-        print(f"\n\n>>> SCENARIO: {scenario} <<<")
-        generate_route_file(scenario)
-        
-        # === START INTELLIGENCE CHECK ===
-        best_config = None
-        best_cost = float('inf')
-
-        # CHECK 1: Do we remember this scenario?
-        if scenario in knowledge_base:
-            print(f"   [MEMORY] I recognize '{scenario}'! Retrieving solution...")
-            best_config = np.array(knowledge_base[scenario]['config'])
-            best_cost = knowledge_base[scenario]['cost']
-            print(f"   [MEMORY] Instant Winner: {best_config} (Saved Cost: {best_cost})")
-            
-            # Start SUMO just to show the winner
-            env = SumoAdapter(gui=True)
-            env.start()
-            bridge.adapter = env
-            
+    # CASE C: High Flow, Low Queue (The "Green Wave" Scenario)
+    # Cars are moving but not stopping. We shouldn't label this "Light".
+    # We check Volume Ratios.
+    if ns_volume > queue_threshold or ew_volume > queue_threshold:
+        # If queues are low but volume is high, use Volume Ratio
+        vol_ratio = ns_volume / max(1, ew_volume)
+        if vol_ratio >= flow_ratio_threshold:
+            return "NS_Flow", vol_ratio, ns_volume, ew_volume
+        elif vol_ratio <= (1 / flow_ratio_threshold):
+            tmp = (1 / vol_ratio) if vol_ratio != 0 else 1
+            return "EW_Flow", tmp, ns_volume, ew_volume
         else:
-            # CHECK 2: No memory? We must learn (Run the EVOLUTIONARY LOOP)
-            print(f"   [UNKNOWN] Never seen '{scenario}' before. Starting AI Optimization...")
-            
-            env = SumoAdapter(gui=True)
-            env.start()
-            bridge.adapter = env
-            
-            # --- START EVOLUTION (The "AI" Part) ---
-            
-            # Generation 0: Random Guesses
-            population = planner.initialize_population(
-                config_space=bridge.bounds, 
-                required_size=5
-            )
-            
-            # We need to track history so DLiSA can learn
-            evaluated_history = [] 
+            return "High_Volume_Balanced", 1.0, ns_volume, ew_volume
 
-            # Run for 3 Generations (0, 1, 2)
-            for gen in range(3):
-                print(f"\n     --- GENERATION {gen} ---")
-                current_gen_results = []
-                
-                # Evaluate this generation
-                for i, config in enumerate(population):
-                    print(f"     [Gen {gen} | Cand {i}] Testing Config: {config}")
-                    costs = bridge.evaluate(config)
-                    cost = costs[0]
-                    print(f"        -> Cost: {cost}")
-                    
-                    # Store result: [config, [cost]]
-                    current_gen_results.append([config, [cost]])
+    # CASE D: Ghost Town (Low Queue, Low Volume)
+    return "Light_Balanced", 1.0, ns_queue, ew_queue
 
-                    # Check if this is the all-time best
-                    if cost < best_cost:
-                        best_cost = cost
-                        best_config = config
-                        print(f"        (New Best Found!)")
 
-                # Add to history
-                evaluated_history.extend(current_gen_results)
+def optimize_in_twin(live_optimizer, workload_label, initial_population, initial_ids, twin_bridge, cp_file):
+    """
+    Runs the Genetic Algorithm inside the Cyber-Twin
+    """
+    # Setup Twin Environment
+    # TODO: Seed?
+    twin_bridge.adapter.start(seed=42)  # Deterministic for fairness
+    twin_bridge.adapter.load_checkpoint(cp_file)
 
-                # CREATE NEXT GENERATION (Evolution)
-                if gen < 2: # Don't breed after the last generation
-                    print("     [AI] Evolving new population based on results...")
-                    population = planner.generate_offspring(
-                        evaluated_history, 
-                        pop_size=5
-                    )
-            
-            # --- END EVOLUTION ---
+    # Run Evolution
+    ga = live_optimizer.ga_worker
 
-            # Step C: SAVE TO MEMORY
-            print(f"   [LEARNING] Optimization complete. Best: {best_config}")
-            print("   [LEARNING] Storing solution to Knowledge Base...")
-            
-            knowledge_base[scenario] = {
-                'config': [int(best_config[0]), int(best_config[1])],
-                'cost': best_cost
-            }
-            with open(kb_path, 'w') as f:
-                json.dump(knowledge_base, f, indent=4)
+    final_pop, final_perfs, final_ids, evaluated_map = ga.run(
+        init_pop_config=initial_population,
+        init_pop_config_ids=initial_ids,
+        config_space=twin_bridge.bounds,
+        perf_space=None,
+        max_generation=live_optimizer.max_generation,
+        bridge=twin_bridge
+    )
 
-        # === APPLY WINNER ===
-        print(f"   >>> APPLYING WINNER: {best_config}")
-        print("   >>> Holding for 15 seconds to demonstrate flow...")
-        
-        bridge.adapter.apply_configuration(int(best_config[0]), int(best_config[1]))
-        
-        # Run simulation for a while so you can see the result
-        for _ in range(150): 
-            bridge.adapter.run_step()
-            time.sleep(0.05) # Small sleep to make it watchable
-            
-        env.close()
+    twin_bridge.adapter.close()
+
+    # Return results for DLiSA memory
+    return final_pop, final_perfs, evaluated_map
+
+
+def get_actual_workload_label(timeline, current_time_step):
+    """
+    Finds the ground truth workload label for a specific time step
+    based on the generated timeline.
+    """
+    for segment in timeline:
+        # Check if the current time falls within this segment's window
+        if segment["begin"] <= current_time_step < segment["end"]:
+            return segment["name"]
+
+    return "Unknown"  # Should not happen
+
+
+def run_cyber_twin_demo(timeline=None, log=True):
+    # Set up a random timeline of scenarios
+    if timeline is None:
+        # TODO: Seed?
+        timeline = build_random_cycling_timeline(segment_len=TIMELINE_SEGMENT_LENGTH, n_cycles=TIMELINE_CYCLE_COUNT, seed=42)
+        generate_timeline_route_file(timeline)
+
+    end_time = timeline[-1]["end"]
+
+    live_optimizer = AdaptationOptimizer(
+        max_generation=OPTIMIZER_MAX_GENERATION,
+        pop_size=OPTIMIZER_POPULATION_SIZE,
+        mutation_rate=OPTIMIZER_MUTATION_RATE,
+        crossover_rate=OPTIMIZER_CROSS_RATE,
+        compared_algorithms=["DLiSA"],
+        system="TrafficLights",  # Not really used, we pass bridge manually
+        optimization_goal="minimum"
+    )
+
+    # Attach a GA worker to the live_optimizer for convenience
+    live_optimizer.ga_worker = GeneticAlgorithm(5, 0.1, 0.8, "minimum")
+
+    # Live Simulation Setup
+    live_sumo_simulation = SumoAdapter(gui=True, label="live", port=8813)
+    # TODO: Seed?
+    live_sumo_simulation.start(seed=42)
+    live_bridge = SumoBridge(live_sumo_simulation)
+
+    crt_config = LIVE_START_CONFIG
+    live_bridge.adapter.apply_configuration(crt_config[0], crt_config[1], log)
+
+    # Detection Loop parameter initializations
+    total_waiting_time = 0
+    crt_workload = None
+    candidate_workload = None
+    stable = 0
+
+    try:
+        for t in range(end_time + 1):
+            live_sumo_simulation.run_step()
+
+            # Get current state - number of stopped vehicles and number of total vehicles
+            halting_state, density_state = live_sumo_simulation.get_state()
+            # Classify current state (detect if workload changed)
+            detected_workload, ratio, ns_stopped, ew_stopped = classify_workload(halting_state, density_state)
+
+            # Stability logic
+            # - do not change configuration if not sure that workload changed
+            # - do not change configuration if too few cars are waiting
+            if (ns_stopped + ew_stopped) < MIN_HALTED_CARS and crt_workload is not None:
+                detected_workload = crt_workload
+
+            if detected_workload != candidate_workload:
+                candidate_workload = detected_workload
+                stable = 1
+            else:
+                stable += 1
+
+            real_workload = get_actual_workload_label(timeline, t)
+            if log: print(f"[MON] t={t} Real Workload={real_workload} Detected Workload={detected_workload} Config={crt_config} Halting state={halting_state} Density state={density_state}")
+
+            # New workload detected - optimize configuration
+            if t % CHECK_EVERY == 0 and stable >= MIN_STABLE_CLASSIFICATIONS and candidate_workload != crt_workload:
+                if log: print(f"\n[DLiSA] New Workload Detected: {candidate_workload}")
+
+                # Ask DLiSA for Initial Population (Seeding vs Random)
+                # We pass the bounds as 'config_space'
+                init_pop, init_ids = live_optimizer.generate_next_population(
+                    config_space=np.array(live_bridge.bounds),
+                    selected_algorithm='DLiSA',
+                    environment_name=candidate_workload
+                )
+
+                # Run Optimization in Cyber-Twin
+                cp_file = os.path.join(os.getcwd(), 'traffic_env/crt_live_cp.xml')
+                live_bridge.adapter.save_checkpoint(cp_file)
+
+                if log: print("   [DLiSA] Running Cyber-Twin Simulation...")
+                best_pop, best_perfs, eval_map = optimize_in_twin(
+                    live_optimizer, candidate_workload, init_pop, init_ids,
+                    SumoBridge(SumoAdapter(gui=False, label="twin", port=9999)), cp_file
+                )
+
+                # Register Results (Learning)
+                live_optimizer.register_workload_result(
+                    environment_name=candidate_workload,
+                    population_configs=best_pop,
+                    population_perfs=best_perfs,
+                    evaluated_configs_map=eval_map
+                )
+
+                # Apply Winner to Live System
+                best_idx = np.argmin(best_perfs)
+                winner = best_pop[best_idx]
+                if log: print(f"   [DLiSA] Optimization Done. Applying: {winner}")
+                live_bridge.adapter.apply_configuration(winner[0], winner[1], log)
+
+                crt_config = winner
+                crt_workload = candidate_workload
+
+            if t % 100 == 0:
+                print(f"[DLiSA] t={t} Cumulative Wait={total_waiting_time:.2f}")
+
+            time.sleep(0.01)
+            total_waiting_time += live_sumo_simulation.get_delta_waiting_time_step()
+    finally:
+        if log: print(f"--- DLiSA FINISHED ---")
+        if log: print(f"Final Total Waiting Time: {total_waiting_time}")
+        live_sumo_simulation.close()
+
+    return total_waiting_time
+
+
+def run_fixed_control_baseline(timeline=None):
+    """
+    Runs the simulation with a fixed, static traffic light program.
+    Used to compare against DLiSA.
+    """
+    if timeline is None:
+        # TODO: Seed?
+        timeline = build_random_cycling_timeline(segment_len=TIMELINE_SEGMENT_LENGTH, n_cycles=TIMELINE_CYCLE_COUNT,
+                                                 seed=42)
+        generate_timeline_route_file(timeline)
+
+    end_time = timeline[-1]["end"]
+
+    # Setup Simulation
+    sim = SumoAdapter(gui=True, label="baseline", port=9998)
+    sim.start(seed=42)
+
+    # Apply Fixed Configuration (Standard Static Program)
+    sim.apply_configuration(42, 42, False)
+
+    total_waiting_time = 0
+
+    try:
+        print(f"--- STARTING BASELINE (Fixed 42s/42s) ---")
+        for t in range(end_time + 1):
+            sim.run_step()
+
+            # Metric: Accumulate waiting time
+            # We use the same metric logic as the bridge to be fair
+            total_waiting_time += sim.get_delta_waiting_time_step()
+
+            if t % 100 == 0:
+                print(f"[Baseline] t={t} Cumulative Wait={total_waiting_time:.2f}")
+
+    finally:
+        print(f"--- BASELINE FINISHED ---")
+        print(f"Final Total Waiting Time: {total_waiting_time}")
+        sim.close()
+
+    return total_waiting_time
+
 
 if __name__ == "__main__":
-    run_dlisa_live()
+    # Ensure SUMO_HOME is set
+    if 'SUMO_HOME' in os.environ:
+        tools = os.path.join(os.environ['SUMO_HOME'], 'tools')
+        sys.path.append(tools)
+    else:
+        sys.exit("please declare environment variable 'SUMO_HOME'")
+
+    if sys.argv[1] == 'compare':
+        # Init timeline once
+
+        num_iterations = 20
+        results = {}
+
+        for i in range(num_iterations):
+            timeline = build_random_cycling_timeline(segment_len=TIMELINE_SEGMENT_LENGTH, n_cycles=TIMELINE_CYCLE_COUNT, seed=42)
+            generate_timeline_route_file(timeline)
+
+            cost_control = run_fixed_control_baseline(timeline)
+            cost_dlisa = run_cyber_twin_demo(timeline, False)
+
+            results[i+1] = cost_control, cost_dlisa
+
+            TIMELINE_CYCLE_COUNT += 1
+            print(f"results: {results}")
+    else:
+        run_cyber_twin_demo()

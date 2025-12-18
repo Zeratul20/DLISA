@@ -1,3 +1,5 @@
-*dlisa_source*
 *pycache*
 *venv*
+.idea*
+*routes.rou.xml
+*crt_live_cp.xml
