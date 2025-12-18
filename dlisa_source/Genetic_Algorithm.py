@@ -15,8 +15,71 @@ class GeneticAlgorithm:
         self.evaluated_configs_to_perfs = {}
         self.optimization_goal = optimization_goal
 
-    # CHANGED: Added 'bridge' parameter and remove other unused parameters
+    ###### ORIGINAL run
+    # def run(self, init_pop_config, init_pop_config_ids, config_space, perf_space, max_generation,
+    #         environmental_selection_type, selected_algorithm, run_no, system, environment_name):
+    #
+    #     parent_configs = init_pop_config.copy()
+    #     parent_ids = init_pop_config_ids.copy()
+    #     parent_perfs, parent_ids = self.evaluate(parent_ids, parent_configs, perf_space)
+    #
+    #     output_folder_pop = 'results/' + system + '/tuning_results/' + selected_algorithm + '/optimized_pop_perf_run_' + str(
+    #         run_no) + f'/evolutionary_process_in_{environment_name}'
+    #
+    #     if not os.path.exists(output_folder_pop):
+    #         os.makedirs(output_folder_pop)
+    #
+    #     # Save the initial population
+    #     np.savetxt(os.path.join(output_folder_pop, 'generation_0_config.csv'), parent_configs,
+    #                fmt='%f', delimiter=',')
+    #     np.savetxt(os.path.join(output_folder_pop, f'generation_0_perf.csv'), parent_perfs,
+    #                delimiter=',')
+    #     np.savetxt(os.path.join(output_folder_pop, 'generation_0__indices.csv'), parent_ids,
+    #                delimiter=',', fmt='%d')
+    #
+    #     for i in range(max_generation):
+    #         offspring_configs, offspring_ids = self.generate_offspring_by_cro_mut(parent_perfs, config_space,
+    #                                                                               parent_configs)
+    #         offspring_perfs, offspring_ids = self.evaluate(offspring_ids, offspring_configs, perf_space)
+    #
+    #         combined_population = np.vstack((parent_configs, offspring_configs))
+    #         combined_performance = np.concatenate((parent_perfs, offspring_perfs))
+    #         combined_indices = np.concatenate((parent_ids, offspring_ids))
+    #
+    #         if environmental_selection_type == 'LiDOS_selection':
+    #
+    #             selected_indices = self.LiDOS_selection(combined_population, combined_performance, combined_indices)
+    #         else:
+    #
+    #             if self.optimization_goal == 'minimum':
+    #                 selected_indices = np.argsort(combined_performance)[:self.pop_size]
+    #             else:
+    #                 selected_indices = np.argsort(combined_performance)[::-1][:self.pop_size]
+    #
+    #         # Due to the environment selection mentioned above, the saved populations must be sorted in order of performance,
+    #         # so the first row is selected as the best in the statistics.
+    #
+    #         parent_configs = combined_population[selected_indices]
+    #         parent_perfs = combined_performance[selected_indices]
+    #         parent_ids = combined_indices[selected_indices]
+    #
+    #         # Save the population in each generation
+    #         np.savetxt(os.path.join(output_folder_pop, f'generation_{i + 1}_config.csv'), parent_configs,
+    #                    fmt='%f', delimiter=',')
+    #         np.savetxt(os.path.join(output_folder_pop, f'generation_{i + 1}_perf.csv'), parent_perfs,
+    #                    delimiter=',')
+    #         np.savetxt(os.path.join(output_folder_pop, f'generation_{i + 1}__indices.csv'), parent_ids,
+    #                    delimiter=',', fmt='%d')
+    #
+    #     # return the config, perf, id in the final generation
+    #     optimized_pop_configs = parent_configs
+    #     optimized_pop_perfs = parent_perfs
+    #     optimized_pop_indices = parent_ids
+    #     return optimized_pop_configs, optimized_pop_perfs, optimized_pop_indices, self.evaluated_configs_to_perfs
+    ######
+
     def run(self, init_pop_config, init_pop_config_ids, config_space, perf_space, max_generation, bridge=None):
+        # CHANGED: Added 'bridge' parameter and remove other unused parameters
 
         parent_configs = init_pop_config.copy()
         parent_ids = init_pop_config_ids.copy()
@@ -52,34 +115,62 @@ class GeneticAlgorithm:
 
         return parent_configs, parent_perfs, parent_ids, self.evaluated_configs_to_perfs
 
-    # CHANGED: Now accepts 'bridge'
+
+    ###### ORIGINAL evaluate
+    # def evaluate(self, population_ids, population_configs, perf_space):
+    #     performance = []
+    #
+    #     if self.optimization_goal == 'minimum':
+    #         lower_quartile_performance = np.percentile(perf_space, 75)
+    #     else:
+    #         lower_quartile_performance = np.percentile(perf_space, 25)
+    #
+    #     for idx, individual_config in zip(population_ids, population_configs):
+    #         if not (any(np.array_equal(individual_config, evaluated_config) for evaluated_config in
+    #                     self.evaluated_configs) and idx in self.evaluated_configs_ids):
+    #             if idx != -1:
+    #                 perf = perf_space[idx]
+    #             else:
+    #                 noise = np.random.uniform(0.001, 0.009)
+    #                 perf = lower_quartile_performance + noise
+    #             performance.append(perf)
+    #             self.evaluated_configs.append(individual_config)
+    #             self.evaluated_configs_ids.append(idx)
+    #             # record those config and corresponding perf that are evaluated
+    #             self.evaluated_configs_to_perfs[tuple(individual_config)] = perf
+    #
+    #     return performance, population_ids
+    ######
+
+
     def evaluate(self, population_ids, population_configs, perf_space, bridge=None):
-            performance = []
+        # CHANGED: Now accepts 'bridge'
+        performance = []
 
-            for idx, individual_config in zip(population_ids, population_configs):
-                # Check cache first
-                config_tuple = tuple(individual_config)
+        for idx, individual_config in zip(population_ids, population_configs):
+            # Check cache first
+            config_tuple = tuple(individual_config)
 
-                if config_tuple in self.evaluated_configs_to_perfs:
-                    perf = self.evaluated_configs_to_perfs[config_tuple]
+            if config_tuple in self.evaluated_configs_to_perfs:
+                perf = self.evaluated_configs_to_perfs[config_tuple]
+            else:
+                # CRITICAL FIX: Use Bridge if available
+                if bridge:
+                    # bridge.evaluate returns a list [cost], we take index 0
+                    perf = bridge.evaluate(individual_config)[0]
+                elif idx != -1 and perf_space is not None:
+                    perf = perf_space[idx]
                 else:
-                    # CRITICAL FIX: Use Bridge if available
-                    if bridge:
-                        # bridge.evaluate returns a list [cost], we take index 0
-                        perf = bridge.evaluate(individual_config)[0]
-                    elif idx != -1 and perf_space is not None:
-                        perf = perf_space[idx]
-                    else:
-                        # Fallback for testing
-                        perf = random.uniform(100, 200)
+                    # Fallback for testing
+                    perf = random.uniform(100, 200)
 
-                    self.evaluated_configs.append(individual_config)
-                    self.evaluated_configs_ids.append(idx)
-                    self.evaluated_configs_to_perfs[config_tuple] = perf
+                self.evaluated_configs.append(individual_config)
+                self.evaluated_configs_ids.append(idx)
+                self.evaluated_configs_to_perfs[config_tuple] = perf
 
-                performance.append(perf)
+            performance.append(perf)
 
-            return np.array(performance), population_ids
+        return np.array(performance), population_ids
 
     def generate_offspring_by_cro_mut(self, parent_perfs, config_space, parent_configs):
         offspring_configs = []

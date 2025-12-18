@@ -10,7 +10,7 @@ from dlisa_source.Genetic_Algorithm import GeneticAlgorithm
 
 class AdaptationOptimizer:
 
-    ####### OLD __init__
+    ####### ORIGINAL __init__
     # def __init__(self, max_generation, pop_size, mutation_rate, crossover_rate, compared_algorithms, system, optimization_goal):
     #     self.max_generation = max_generation
     #     self.pop_size = pop_size
@@ -137,7 +137,7 @@ class AdaptationOptimizer:
             df.to_csv(os.path.join(output_folder_pop_perf, 'similarity_score.csv'), index_label=False)
 
 
-    ###### OLD initialize_population
+    ###### ORIGINAL initialize_population
     # def initialize_population(self, config_space, required_size, existing_configs=None, existing_ids=None):
     #
     #     ''' As the existing dataset did not test all the config to obtain corresponding perf, simply generate configs may not exist in the dataset
@@ -215,7 +215,7 @@ class AdaptationOptimizer:
         return np.array(population), np.array(ids)
 
 
-    ###### OLD generate_next_population
+    ###### ORIGINAL generate_next_population
     # def generate_next_population(self, config_space, selected_algorithm, environment_name, beta=0.3):
     #
     #     #  ************Stationary planner************
