@@ -1,24 +1,12 @@
-import traci
-import sumolib
-import sys
 import os
+import traci
 
-# Ensure SUMO_HOME is set
-if 'SUMO_HOME' in os.environ:
-    tools = os.path.join(os.environ['SUMO_HOME'], 'tools')
-    sys.path.append(tools)
-else:
-    sys.exit("please declare environment variable 'SUMO_HOME'")
 
 class SumoAdapter:
     def __init__(self, gui=False, label="default", port=None):
         self.sumo_binary = "sumo-gui" if gui else "sumo"
         self.config_path = "traffic_env/config.sumocfg"
-        
-        # FIX 1: Updated ID from your find_lanes.py output
-        self.tls_id = "A1" 
-
-        # second conn
+        self.tls_id = "A1"
         self.label = label
         self.port = port
         self.conn = None
@@ -26,10 +14,9 @@ class SumoAdapter:
         #  last cumm time
         self._prev_wait = {}
 
-    def start(self,seed = None):
+    def start(self, seed=None):
         cmd = [self.sumo_binary, "-c", self.config_path, "--start", "--delay", "100"]
 
-        # NEW: deterministic/stochastic replication control
         if seed is not None:
             cmd += ["--seed", str(seed)]
 
@@ -41,19 +28,27 @@ class SumoAdapter:
             self.conn.close()
             self.conn = None
 
-    def min_expected(self) -> int:
-        return int(self.conn.simulation.getMinExpectedNumber())
-
     def get_state(self):
-        # Axis 1: B1 and B3 (e.g., North-South)
-        q_N = self.conn.lane.getLastStepHaltingNumber("B1A1_0")
-        q_S = self.conn.lane.getLastStepHaltingNumber("B3A1_0")
-        
-        # Axis 2: B4 and B2 (e.g., East-West)
-        q_E = self.conn.lane.getLastStepHaltingNumber("B4A1_0")
-        q_W = self.conn.lane.getLastStepHaltingNumber("B2A1_0")
-        
-        return [q_N, q_S, q_E, q_W]
+
+        # NS Axis (B2, B4)
+        h_NS1 = self.conn.lane.getLastStepHaltingNumber("B2A1_0")
+        h_NS2 = self.conn.lane.getLastStepHaltingNumber("B4A1_0")
+        t_NS1 = self.conn.lane.getLastStepVehicleNumber("B2A1_0")
+        t_NS2 = self.conn.lane.getLastStepVehicleNumber("B4A1_0")
+
+        # EW Axis (B1, B3)
+        h_EW1 = self.conn.lane.getLastStepHaltingNumber("B1A1_0")
+        h_EW2 = self.conn.lane.getLastStepHaltingNumber("B3A1_0")
+        t_EW1 = self.conn.lane.getLastStepVehicleNumber("B1A1_0")
+        t_EW2 = self.conn.lane.getLastStepVehicleNumber("B3A1_0")
+
+        # Return as two distinct vectors
+        # Vector 1: Queue/Halting
+        halting_state = [h_NS1, h_NS2, h_EW1, h_EW2]
+        # Vector 2: Density/Total
+        density_state = [t_NS1, t_NS2, t_EW1, t_EW2]
+
+        return halting_state, density_state
 
     def reset_waiting_meter(self):
         """Reset delta-wait tracking (call at the start of each evaluation window)."""
@@ -84,37 +79,24 @@ class SumoAdapter:
 
     def apply_configuration(self, green_NS, green_EW):
         print("APPLY green_NS:", green_NS, "green_EW:", green_EW)
-        # FIX 2: Use getAllProgramLogics instead of getLogic
         logic = self.conn.trafficlight.getAllProgramLogics(self.tls_id)[0]
-        
-        # We need to preserve the original phase structure (Yellow lights)
-        # Standard SUMO generated lights usually have 4 phases:
-        # 0: Green NS
-        # 1: Yellow NS
-        # 2: Green EW
-        # 3: Yellow EW
-        
+
         # We create a new phases list copying the states but changing duration
         phases = []
-        
-        # Note: The state string "GrGr..." depends on how many lanes you have.
-        # We grab the 'state' string from the existing logic so we don't break it.
-        # usually logic.phases is a tuple of Phase objects.
-        
         current_phases = logic.phases
-        
-        # Phase 0 (North-South Green) -> Update Duration
+
+        # Phase 0 (North-South Green)
         phases.append(self.conn.trafficlight.Phase(duration=green_NS, state=current_phases[0].state))
-        
-        # Phase 1 (Yellow) -> Keep Duration (usually 3s or 4s)
+
+        # Phase 1 (Yellow) -> Keep Duration
         phases.append(self.conn.trafficlight.Phase(duration=current_phases[1].duration, state=current_phases[1].state))
-        
+
         # Phase 2 (East-West Green) -> Update Duration
         phases.append(self.conn.trafficlight.Phase(duration=green_EW, state=current_phases[2].state))
-        
-        # Phase 3 (Yellow) -> Keep Duration
+
+        # Phase 3 (Yellow)
         phases.append(self.conn.trafficlight.Phase(duration=current_phases[3].duration, state=current_phases[3].state))
-        
+
         logic.phases = phases
         self.conn.trafficlight.setCompleteRedYellowGreenDefinition(self.tls_id, logic)
 
@@ -129,9 +111,3 @@ class SumoAdapter:
 
     def run_step(self):
         self.conn.simulationStep()
-
-    def get_reward_metric(self):
-        total_wait = 0
-        for veh_id in self.conn.vehicle.getIDList():
-            total_wait += self.conn.vehicle.getAccumulatedWaitingTime(veh_id)
-        return total_wait
