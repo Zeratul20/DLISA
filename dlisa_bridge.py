@@ -25,7 +25,7 @@ class SumoBridge:
         # [NS bounds, EW bounds]
         self.bounds = LIGHTS_TIME_BOUNDS
 
-    def evaluate(self, configuration):
+    def evaluate(self, configuration, log=True):
         """
         DLiSA calls this to test a specific configuration.
         """
@@ -40,7 +40,7 @@ class SumoBridge:
         replicate_costs = []
 
         # Apply candidate
-        self.adapter.apply_configuration(green_ns, green_ew)
+        self.adapter.apply_configuration(green_ns, green_ew, log)
 
         # Warm-up
         for _ in range(WARMUP_STEPS):

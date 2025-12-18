@@ -15,7 +15,7 @@ class SumoAdapter:
         self._prev_wait = {}
 
     def start(self, seed=None):
-        cmd = [self.sumo_binary, "-c", self.config_path, "--start", "--delay", "100"]
+        cmd = [self.sumo_binary, "-c", self.config_path, "--start", "--delay", "1", "--quit-on-end"]
 
         if seed is not None:
             cmd += ["--seed", str(seed)]
@@ -77,8 +77,8 @@ class SumoAdapter:
 
         return total_delta
 
-    def apply_configuration(self, green_NS, green_EW):
-        print("APPLY green_NS:", green_NS, "green_EW:", green_EW)
+    def apply_configuration(self, green_NS, green_EW, log=True):
+        #if log: print("APPLY green_NS:", green_NS, "green_EW:", green_EW)
         logic = self.conn.trafficlight.getAllProgramLogics(self.tls_id)[0]
 
         # We create a new phases list copying the states but changing duration

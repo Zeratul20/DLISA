@@ -13,7 +13,7 @@ from tools.workload_generator import build_random_cycling_timeline, generate_tim
 ###### Global definitions of configurable parameters
 ### Timeline creation
 TIMELINE_SEGMENT_LENGTH = 200
-TIMELINE_CYCLE_COUNT = 3
+TIMELINE_CYCLE_COUNT = 1
 ###
 ### Optimizer
 OPTIMIZER_MAX_GENERATION = 5
@@ -81,7 +81,8 @@ def classify_workload(halting_state, density_state, queue_threshold=10, flow_rat
         if vol_ratio >= flow_ratio_threshold:
             return "NS_Flow", vol_ratio, ns_volume, ew_volume
         elif vol_ratio <= (1 / flow_ratio_threshold):
-            return "EW_Flow", (1 / vol_ratio), ns_volume, ew_volume
+            tmp = (1 / vol_ratio) if vol_ratio != 0 else 1
+            return "EW_Flow", tmp, ns_volume, ew_volume
         else:
             return "High_Volume_Balanced", 1.0, ns_volume, ew_volume
 
@@ -129,11 +130,13 @@ def get_actual_workload_label(timeline, current_time_step):
     return "Unknown"  # Should not happen
 
 
-def run_cyber_twin_demo():
+def run_cyber_twin_demo(timeline=None, log=True):
     # Set up a random timeline of scenarios
-    # TODO: Seed?
-    timeline = build_random_cycling_timeline(segment_len=TIMELINE_SEGMENT_LENGTH, n_cycles=TIMELINE_CYCLE_COUNT, seed=42)
-    generate_timeline_route_file(timeline)
+    if timeline is None:
+        # TODO: Seed?
+        timeline = build_random_cycling_timeline(segment_len=TIMELINE_SEGMENT_LENGTH, n_cycles=TIMELINE_CYCLE_COUNT, seed=42)
+        generate_timeline_route_file(timeline)
+
     end_time = timeline[-1]["end"]
 
     live_optimizer = AdaptationOptimizer(
@@ -152,13 +155,14 @@ def run_cyber_twin_demo():
     # Live Simulation Setup
     live_sumo_simulation = SumoAdapter(gui=True, label="live", port=8813)
     # TODO: Seed?
-    live_sumo_simulation.start()
+    live_sumo_simulation.start(seed=42)
     live_bridge = SumoBridge(live_sumo_simulation)
 
     crt_config = LIVE_START_CONFIG
-    live_bridge.adapter.apply_configuration(crt_config[0], crt_config[1])
+    live_bridge.adapter.apply_configuration(crt_config[0], crt_config[1], log)
 
     # Detection Loop parameter initializations
+    total_waiting_time = 0
     crt_workload = None
     candidate_workload = None
     stable = 0
@@ -185,11 +189,11 @@ def run_cyber_twin_demo():
                 stable += 1
 
             real_workload = get_actual_workload_label(timeline, t)
-            print(f"[MON] t={t} Real Workload={real_workload} Detected Workload={detected_workload} Config={crt_config} Halting state={halting_state} Density state={density_state}")
+            if log: print(f"[MON] t={t} Real Workload={real_workload} Detected Workload={detected_workload} Config={crt_config} Halting state={halting_state} Density state={density_state}")
 
             # New workload detected - optimize configuration
             if t % CHECK_EVERY == 0 and stable >= MIN_STABLE_CLASSIFICATIONS and candidate_workload != crt_workload:
-                print(f"\n[DLiSA] New Workload Detected: {candidate_workload}")
+                if log: print(f"\n[DLiSA] New Workload Detected: {candidate_workload}")
 
                 # Ask DLiSA for Initial Population (Seeding vs Random)
                 # We pass the bounds as 'config_space'
@@ -203,7 +207,7 @@ def run_cyber_twin_demo():
                 cp_file = os.path.join(os.getcwd(), 'traffic_env/crt_live_cp.xml')
                 live_bridge.adapter.save_checkpoint(cp_file)
 
-                print("   [DLiSA] Running Cyber-Twin Simulation...")
+                if log: print("   [DLiSA] Running Cyber-Twin Simulation...")
                 best_pop, best_perfs, eval_map = optimize_in_twin(
                     live_optimizer, candidate_workload, init_pop, init_ids,
                     SumoBridge(SumoAdapter(gui=False, label="twin", port=9999)), cp_file
@@ -220,15 +224,65 @@ def run_cyber_twin_demo():
                 # Apply Winner to Live System
                 best_idx = np.argmin(best_perfs)
                 winner = best_pop[best_idx]
-                print(f"   [DLiSA] Optimization Done. Applying: {winner}")
-                live_bridge.adapter.apply_configuration(winner[0], winner[1])
+                if log: print(f"   [DLiSA] Optimization Done. Applying: {winner}")
+                live_bridge.adapter.apply_configuration(winner[0], winner[1], log)
 
                 crt_config = winner
                 crt_workload = candidate_workload
 
+            if t % 100 == 0:
+                print(f"[DLiSA] t={t} Cumulative Wait={total_waiting_time:.2f}")
+
             time.sleep(0.01)
+            total_waiting_time += live_sumo_simulation.get_delta_waiting_time_step()
     finally:
+        if log: print(f"--- DLiSA FINISHED ---")
+        if log: print(f"Final Total Waiting Time: {total_waiting_time}")
         live_sumo_simulation.close()
+
+    return total_waiting_time
+
+
+def run_fixed_control_baseline(timeline=None):
+    """
+    Runs the simulation with a fixed, static traffic light program.
+    Used to compare against DLiSA.
+    """
+    if timeline is None:
+        # TODO: Seed?
+        timeline = build_random_cycling_timeline(segment_len=TIMELINE_SEGMENT_LENGTH, n_cycles=TIMELINE_CYCLE_COUNT,
+                                                 seed=42)
+        generate_timeline_route_file(timeline)
+
+    end_time = timeline[-1]["end"]
+
+    # Setup Simulation
+    sim = SumoAdapter(gui=True, label="baseline", port=9998)
+    sim.start(seed=42)
+
+    # Apply Fixed Configuration (Standard Static Program)
+    sim.apply_configuration(42, 42, False)
+
+    total_waiting_time = 0
+
+    try:
+        print(f"--- STARTING BASELINE (Fixed 42s/42s) ---")
+        for t in range(end_time + 1):
+            sim.run_step()
+
+            # Metric: Accumulate waiting time
+            # We use the same metric logic as the bridge to be fair
+            total_waiting_time += sim.get_delta_waiting_time_step()
+
+            if t % 100 == 0:
+                print(f"[Baseline] t={t} Cumulative Wait={total_waiting_time:.2f}")
+
+    finally:
+        print(f"--- BASELINE FINISHED ---")
+        print(f"Final Total Waiting Time: {total_waiting_time}")
+        sim.close()
+
+    return total_waiting_time
 
 
 if __name__ == "__main__":
@@ -238,4 +292,23 @@ if __name__ == "__main__":
         sys.path.append(tools)
     else:
         sys.exit("please declare environment variable 'SUMO_HOME'")
-    run_cyber_twin_demo()
+
+    if sys.argv[1] == 'compare':
+        # Init timeline once
+
+        num_iterations = 20
+        results = {}
+
+        for i in range(num_iterations):
+            timeline = build_random_cycling_timeline(segment_len=TIMELINE_SEGMENT_LENGTH, n_cycles=TIMELINE_CYCLE_COUNT, seed=42)
+            generate_timeline_route_file(timeline)
+
+            cost_control = run_fixed_control_baseline(timeline)
+            cost_dlisa = run_cyber_twin_demo(timeline, False)
+
+            results[i+1] = cost_control, cost_dlisa
+
+            TIMELINE_CYCLE_COUNT += 1
+            print(f"results: {results}")
+    else:
+        run_cyber_twin_demo()
