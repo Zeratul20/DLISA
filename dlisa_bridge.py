@@ -24,6 +24,7 @@ class SumoBridge:
         self.n_dim = 2
         # [NS bounds, EW bounds]
         self.bounds = LIGHTS_TIME_BOUNDS
+        self.checkpoint = None
 
     def evaluate(self, configuration, log=True):
         """
@@ -39,21 +40,25 @@ class SumoBridge:
 
         replicate_costs = []
 
-        # Apply candidate
-        self.adapter.apply_configuration(green_ns, green_ew, log)
+        # Load checkpoint for fresh evaluation
+        if self.checkpoint:
+            self.adapter.load_checkpoint(self.checkpoint)
 
-        # Warm-up
-        for _ in range(WARMUP_STEPS):
-            self.adapter.run_step()
+            # Apply candidate
+            self.adapter.apply_configuration(green_ns, green_ew, log)
 
-        # Measure delta waiting
-        self.adapter.reset_waiting_meter()
-        cost = 0.0
-        for _ in range(MEASURE_STEPS):
-            self.adapter.run_step()
-            cost += self.adapter.get_delta_waiting_time_step()
+            # Warm-up
+            for _ in range(WARMUP_STEPS):
+                self.adapter.run_step()
 
-            replicate_costs.append(cost)
+            # Measure delta waiting
+            self.adapter.reset_waiting_meter()
+            cost = 0.0
+            for _ in range(MEASURE_STEPS):
+                self.adapter.run_step()
+                cost += self.adapter.get_delta_waiting_time_step()
+
+                replicate_costs.append(cost)
 
         # Mean across replications
         mean_cost = float(np.mean(replicate_costs))

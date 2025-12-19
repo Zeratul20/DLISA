@@ -29,6 +29,53 @@ MIN_HALTED_CARS = 6
 ###
 ######
 
+########
+# def classify_workload(halting_state, density_state, queue_threshold=10, flow_ratio_threshold=1.6):
+#     """
+#     Classifies workload strictly into 'NS_Heavy', 'EW_Heavy', or 'Balanced'.
+#     Matches the SCENARIO_MAP definitions.
+#     """
+#     # Unpack
+#     q_ns1, q_ns2, q_ew1, q_ew2 = halting_state
+#     t_ns1, t_ns2, t_ew1, t_ew2 = density_state
+#
+#     # Calculate Aggregate Metrics
+#     ns_queue = q_ns1 + q_ns2
+#     ew_queue = q_ew1 + q_ew2
+#
+#     ns_total = t_ns1 + t_ns2
+#     ew_total = t_ew1 + t_ew2
+#
+#     # Calculate "Pressure" Score
+#     # We weight Queues (stopped cars) higher than moving volume.
+#     # This ensures that a traffic jam takes priority over a green wave.
+#     ns_score = (ns_queue * QUEUE_PRIO_MULTIPLIER) + ns_total
+#     ew_score = (ew_queue * QUEUE_PRIO_MULTIPLIER) + ew_total
+#
+#     # Avoid division by zero for ratios
+#     safe_ew = ew_score if ew_score > 0 else 0.1
+#     safe_ns = ns_score if ns_score > 0 else 0.1
+#
+#     # CASE 1: NS Dominance
+#     # If NS pressure is significantly higher than EW
+#     if ns_score > (safe_ew * flow_ratio_threshold):
+#         ratio = ns_score / safe_ew
+#         return "NS_Heavy", ratio, ns_queue, ew_queue
+#
+#     # CASE 2: EW Dominance
+#     # If EW pressure is significantly higher than NS
+#     if ew_score > (safe_ns * flow_ratio_threshold):
+#         ratio = ew_score / safe_ns
+#         return "EW_Heavy", ratio, ns_queue, ew_queue
+#
+#     # CASE 3: Balanced
+#     # This covers:
+#     # - Light Traffic (Low vs Low)
+#     # - Saturated Gridlock (High vs High)
+#     # - True Balanced Flow (Medium vs Medium)
+#     return "Balanced", 1.0, ns_queue, ew_queue
+######
+
 
 def classify_workload(halting_state, density_state, queue_threshold=10, flow_ratio_threshold=2.0):
     """
@@ -97,7 +144,7 @@ def optimize_in_twin(live_optimizer, workload_label, initial_population, initial
     # Setup Twin Environment
     # TODO: Seed?
     twin_bridge.adapter.start(seed=42)  # Deterministic for fairness
-    twin_bridge.adapter.load_checkpoint(cp_file)
+    twin_bridge.checkpoint = cp_file
 
     # Run Evolution
     ga = live_optimizer.ga_worker
@@ -293,22 +340,28 @@ if __name__ == "__main__":
     else:
         sys.exit("please declare environment variable 'SUMO_HOME'")
 
-    if sys.argv[1] == 'compare':
+    if len(sys.argv) > 1 and sys.argv[1] == 'compare':
         # Init timeline once
 
-        num_iterations = 20
+        num_iterations = 6
         results = {}
+        j = 0
 
-        for i in range(num_iterations):
-            timeline = build_random_cycling_timeline(segment_len=TIMELINE_SEGMENT_LENGTH, n_cycles=TIMELINE_CYCLE_COUNT, seed=42)
-            generate_timeline_route_file(timeline)
+        while True:
+            j = j + 1
+            results[j] = {}
+            TIMELINE_CYCLE_COUNT = 1
+            for i in range(num_iterations):
+                timeline = build_random_cycling_timeline(segment_len=TIMELINE_SEGMENT_LENGTH, n_cycles=TIMELINE_CYCLE_COUNT, seed=42)
+                generate_timeline_route_file(timeline)
 
-            cost_control = run_fixed_control_baseline(timeline)
-            cost_dlisa = run_cyber_twin_demo(timeline, False)
+                cost_control = run_fixed_control_baseline(timeline)
+                cost_dlisa = run_cyber_twin_demo(timeline, True)
 
-            results[i+1] = cost_control, cost_dlisa
+                results[j][i+1] = cost_control, cost_dlisa
 
-            TIMELINE_CYCLE_COUNT += 1
-            print(f"results: {results}")
+                TIMELINE_CYCLE_COUNT += 1
+                print(f"results: {results}")
+
     else:
         run_cyber_twin_demo()
